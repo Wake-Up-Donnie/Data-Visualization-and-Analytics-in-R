@@ -1,0 +1,1647 @@
+---
+title: 'Project 2: Modeling and Evaluation'
+subtitle: |-
+  CSE6242 - Data and Visual Analytics - Spring 2017
+  author: 'Tyler Bobik'
+  GT_Account_Name: 'tbobik3'
+  Due: Sunday, March 5, 2017 at 11:59 PM UTC-12:00 on T-Square
+  output: pdf_document
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+# Data
+
+We will use the same dataset as Project 1: [`movies_merged`](https://s3.amazonaws.com/content.udacity-data.com/courses/gt-cs6242/project/movies_merged).
+
+# Objective
+
+Your goal in this project is to build a linear regression model that can predict the `Gross` revenue earned by a movie based on other variables. You may use R packages to fit and evaluate a regression model (no need to implement regression yourself). Please stick to linear regression, however.
+
+# Instructions
+
+You should be familiar with using an [RMarkdown](http://rmarkdown.rstudio.com) Notebook by now. Remember that you have to open it in RStudio, and you can run code chunks by pressing *Cmd+Shift+Enter*.
+
+Please complete the tasks below and submit this R Markdown file (as **pr2.Rmd**) containing all completed code chunks and written responses, as well as a PDF export of it (as **pr2.pdf**) which should include all of that plus output, plots and written responses for each task.
+
+_Note that **Setup** and **Data Preprocessing** steps do not carry any points, however, they need to be completed as instructed in order to get meaningful results._
+
+# Setup
+
+Same as Project 1, load the dataset into memory:
+
+```{r}
+load('movies_merged')
+```
+
+This creates an object of the same name (`movies_merged`). For convenience, you can copy it to `df` and start using it:
+
+```{r}
+df = movies_merged
+cat("Dataset has", dim(df)[1], "rows and", dim(df)[2], "columns", end="\n", file="")
+colnames(df)
+```
+
+## Load R packages
+
+Load any R packages that you will need to use. You can come back to this chunk, edit it and re-run to load any additional packages later.
+
+```{r}
+library(ggplot2)
+library(GGally)
+library(stringr)
+library(stringi)
+library(tm)
+library(knitr)
+library(stringr)
+library(hydroGOF)
+```
+
+If you are using any non-standard packages (ones that have not been discussed in class or explicitly allowed for this project), please mention them below. Include any special instructions if they cannot be installed using the regular `install.packages('<pkg name>')` command.
+
+**Non-standard packages used**: None
+
+# Data Preprocessing
+
+Before we start building models, we should clean up the dataset and perform any preprocessing steps that may be necessary. Some of these steps can be copied in from your Project 1 solution. It may be helpful to print the dimensions of the resulting dataframe at each step.
+
+## 1. Remove non-movie rows
+
+```{r}
+# TODO: Remove all rows from df that do not correspond to movies
+df = df[df$Type == "movie",]
+df$Runtime[df$Runtime == 'N/A'] = NA
+```
+
+## 2. Drop rows with missing `Gross` value
+
+Since our goal is to model `Gross` revenue against other variables, rows that have missing `Gross` values are not useful to us.
+
+```{r}
+# TODO: Remove rows with missing Gross value
+df$Gross[df$Gross == 'N/A'] = NA
+df = subset(df, !is.na(df$Gross))
+```
+
+## 3. Exclude movies released prior to 2000
+
+Inflation and other global financial factors may affect the revenue earned by movies during certain periods of time. Taking that into account is out of scope for this project, so let's exclude all movies that were released prior to the year 2000 (you may use `Released`, `Date` or `Year` for this purpose).
+
+```{r}
+# TODO: Exclude movies released prior to 2000
+df = subset(df, df$Date >= 2000)
+```
+
+## 4. Eliminate mismatched rows
+
+_Note: You may compare the `Released` column (string representation of release date) with either `Year` or `Date` (numeric representation of the year) to find mismatches. The goal is to avoid removing more than 10% of the rows._
+
+```{r}
+# TODO: Remove mismatched rows
+missmached = function(col1,col2){
+        seq_Col = seq_along(col1)
+        total_gross_entries = c()
+        notequal = c()
+        split = c()
+        for(i in seq_Col){
+                split_On_Dashes = strsplit(as.character(df$Released[i]), '-')[[1]]
+                if(is.na(split_On_Dashes[1])){
+                        split_On_Dashes = 0
+                        split = append(split,as.numeric(split_On_Dashes))
+                }
+                else{
+                        split = append(split,as.numeric(split_On_Dashes[1]))
+                }
+        }
+        return (split)
+}
+splitReleased = missmached(df$Released, df$Year)
+compareYearVsReleasedYear = df$Year == splitReleased
+combinedDf = data.frame(df$Title, df$imdbID, df$Gross, df$Year, splitReleased, compareYearVsReleasedYear)
+
+ten_percent = round((length(df$Gross) * .10))
+print (ten_percent)
+combinedDf = subset(combinedDf, splitReleased != 0)
+combinedDf = subset(combinedDf, compareYearVsReleasedYear== FALSE)
+combinedDf = combinedDf[1:ten_percent,]
+df = df[!(df$imdbID %in% combinedDf$df.imdbID),]
+#df = subset(df, !is.na(Released))
+
+```
+
+## 5. Drop `Domestic_Gross` column
+
+`Domestic_Gross` is basically the amount of revenue a movie earned within the US. Understandably, it is very highly correlated with `Gross` and is in fact equal to it for movies that were not released globally. Hence, it should be removed for modeling purposes.
+
+```{r}
+# TODO: Exclude the `Domestic_Gross` column
+
+drops <- c("Domestic_Gross")
+df = df[ , !(names(df) %in% drops)]
+
+```
+
+## 6. Process `Runtime` column
+
+```{r}
+# TODO: Replace df$Runtime with a numeric column containing the runtime in minutes
+runtime_String = function(col){
+        length_Col = seq_along(col)
+        convertedToMin = c()
+        for(i in length_Col){
+                split_On_Spaces = strsplit(df$Runtime[i], ' ')[[1]]
+                if((is.na(split_On_Spaces[2]))){
+                        convertedToMin = append(convertedToMin, NA)
+                }
+                else if((grepl("min", split_On_Spaces[2]))){
+                        convertedToMin = append(convertedToMin,(as.numeric(split_On_Spaces[1])))
+                        
+                }
+                else if((grepl("h", split_On_Spaces[2]))){
+                        convertedToMin = append(convertedToMin,(as.numeric(split_On_Spaces[1])) * 60 + (as.numeric(split_On_Spaces[3])))
+                        #print (convertedToMin)
+                }
+        }
+        return (convertedToMin)
+}
+df$Runtime = (runtime_String(df$Runtime))
+df = subset(df, !is.na(Runtime))
+```
+
+Perform any additional preprocessing steps that you find necessary, such as dealing with missing values or highly correlated columns (feel free to add more code chunks, markdown blocks and plots here as necessary).
+
+```{r}
+# TODO(optional): Additional preprocessing
+
+df$Metascore[df$Metascore == 'N/A'] = NA
+df$Metascore <- as.numeric(as.character(df$Metascore))
+
+drops <- c("tomatoReviews")
+df = df[ , !(names(df) %in% drops)]
+drops <- c("tomatoMeter")
+df = df[ , !(names(df) %in% drops)]
+
+df = df[complete.cases(df$DVD),]
+df = df[complete.cases(df$imdbVotes),]
+df = df[complete.cases(df$tomatoUserRating),]
+df = df[complete.cases(df$tomatoRotten),]
+df = df[complete.cases(df$Metascore),]
+
+df$Gross[df$Gross == 0] = NA
+df = subset(df, !is.na(df$Gross))
+# Removed NA values and highly correlated columns
+```
+
+_**Note**: Do NOT convert categorical variables (like `Genre`) into binary columns yet. You will do that later as part of a model improvement task._
+
+## Final preprocessed dataset
+
+Report the dimensions of the preprocessed dataset you will be using for modeling and evaluation, and print all the final column names. (Again, `Domestic_Gross` should not be in this list!)
+
+```{r}
+# TODO: Print the dimensions of the final preprocessed dataset and column names
+cat("Dataset has", dim(df)[1], "rows and", dim(df)[2], "columns", end="\n", file="")
+```
+
+# Evaluation Strategy
+
+In each of the tasks described in the next section, you will build a regression model. In order to compare their performance, use the following evaluation procedure every time:
+
+1. Randomly divide the rows into two sets of sizes 5% and 95%.
+2. Use the first set for training and the second for testing.
+3. Compute the Root Mean Squared Error (RMSE) on the train and test sets.
+4. Repeat the above data partition and model training and evaluation 10 times and average the RMSE results so the results stabilize.
+5. Repeat the above steps for different proportions of train and test sizes: 10%-90%, 15%-85%, ..., 95%-5% (total 19 splits including the initial 5%-95%).
+6. Generate a graph of the averaged train and test RMSE as a function of the train set size (%).
+
+You can define a helper function that applies this procedure to a given model and reuse it.
+
+# Tasks
+
+Each of the following tasks is worth 20 points. Remember to build each model as specified, evaluate it using the strategy outlined above, and plot the training and test errors by training set size (%).
+
+## 1. Numeric variables
+
+Use linear regression to predict `Gross` based on all available _numeric_ variables.
+
+```{r}
+# TODO: Build & evaluate model 1 (numeric variables only)
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                        trainNumbers = sample(seq_len(nrow(df)), replace=F,size=floor(training_size[i]*nrow(df)))
+                        train = df[trainNumbers,]
+                        test = df[-trainNumbers,]
+
+                        M1 = lm(Gross~Year+Runtime+imdbRating+imdbVotes+tomatoRating+tomatoFresh+tomatoRotten+tomatoUserMeter+
+                                        tomatoUserRating+tomatoUserReviews+Budget, train);
+                       
+                        pred_train = predict(M1, train)
+                        pred_test = predict(M1,test)
+                        train_rmse_avg = train_rmse_avg + rmse(pred_train,train$Gross)
+                        
+                        test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                        
+                        if(l == 50){
+                                train_avg = train_rmse_avg/50
+                                training_rmse[i] = train_avg
+                                train_rmse_avg = 0
+                                test_avg = test_rmse_avg/50
+                                testing_rmse[i] = test_avg
+                                test_rmse_avg = 0
+                        }
+                }
+        }
+             
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+```
+
+**Q**: List all the numeric variables you used.
+
+**A**: Year Runtime imdbRating imdbVotes tomatoRating tomatoFresh tomatoRotten tomatoUserMeter tomatoUserRating tomatoUserReviews Budget
+It should also be noted that I am using 50iterations to get a less noisey graph. 
+
+## 2. Feature transformations
+
+Try to improve the prediction quality from **Task 1** as much as possible by adding feature transformations of the numeric variables. Explore both numeric transformations such as power transforms and non-numeric transformations of the numeric variables like binning (e.g. `is_budget_greater_than_3M`).
+
+```{r}
+# TODO: Build & evaluate model 2 (transformed numeric variables only)
+ggplot(data = df, aes(x = Runtime, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()  + 
+        labs(title="Gross Vs Runtime", y="Gross", x="Runtime") 
+
+ggplot(data = df, aes(x = log10(df$Runtime), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm") + 
+        labs(title="Gross Vs log10(Runtime)", y="Gross", x="Runtime") 
+
+ggplot(data = df, aes(x = sqrt(df$Runtime), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ 
+        labs(title="Gross Vs sqrt(Runtime)", y="Gross", x="Runtime") 
+
+ggplot(data = df, aes(x = df$Runtime, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))+ 
+        labs(title="Gross Vs poly(Runtime,2)", y="Gross", x="Runtime") 
+
+ggplot(data = df, aes(x = df$Runtime, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+ 
+        labs(title="Gross Vs poly(Runtime,3)", y="Gross", x="Runtime") 
+
+ggplot(data = df, aes(x = df$Runtime, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+ 
+        labs(title="Gross Vs poly(Runtime,4)", y="Gross", x="Runtime") 
+
+#For Runtime I believe that the transformation log10 on Runtime fits the data the best, based on the scatter plot with the fitted line graph.
+
+ggplot(data = df, aes(x = imdbRating, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()+ 
+        labs(title="Gross Vs imdbRating", y="Gross", x="imdbRating") 
+
+
+ggplot(data = df, aes(x = log10(imdbRating), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ 
+        labs(title="Gross Vs log10(imdbRating)", y="Gross", x="imdbRating") 
+
+ggplot(data = df, aes(x = sqrt(imdbRating), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ 
+        labs(title="Gross Vs sqrt(imdbRating)", y="Gross", x="imdbRating") 
+
+ggplot(data = df, aes(x = imdbRating, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))+ 
+        labs(title="Gross Vs poly(imdbRating,2)", y="Gross", x="imdbRating") 
+
+ggplot(data = df, aes(x = imdbRating, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+ 
+        labs(title="Gross Vs poly(imdbRating,3)", y="Gross", x="imdbRating") 
+
+ggplot(data = df, aes(x = imdbRating, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+ 
+        labs(title="Gross Vs poly(imdbRating,4)", y="Gross", x="imdbRating") 
+
+#From the graphs for imdbRating I believe that the transformation imdbRating^2 fits the data the best.
+
+ggplot(data = df, aes(x = imdbVotes, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw() + labs(title="Gross Vs imdbVotes", y="Gross", x="imdbVotes") 
+
+
+ggplot(data = df, aes(x = log10(imdbVotes), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs log10(imdbVotes)", y="Gross", x="imdbVotes") 
+
+ggplot(data = df, aes(x = sqrt(imdbVotes), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs sqrt(imdbVotes)", y="Gross", x="imdbVotes") 
+
+ggplot(data = df, aes(x = imdbVotes, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))+ 
+        labs(title="Gross Vs poly(imdbVotes,2)", y="Gross", x="imdbVotes") 
+
+ggplot(data = df, aes(x = imdbVotes, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+ 
+        labs(title="Gross Vs poly(imdbVotes,3)", y="Gross", x="imdbVotes") 
+
+ggplot(data = df, aes(x = imdbVotes, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+ 
+        labs(title="Gross Vs poly(imdbVotes,4)", y="Gross", x="imdbVotes") 
+
+#Some of these were close for imdbVotes so i decided to try some of them in my model and found that poly(imdbVotes,2) improved my model the most
+ggplot(data = df, aes(x = tomatoRating, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()+ labs(title="Gross Vs tomatoRating", y="Gross", x="tomatoRating") 
+
+
+ggplot(data = df, aes(x = log10(tomatoRating), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs log10(tomatoRating)", y="Gross", x="tomatoRating") 
+
+ggplot(data = df, aes(x = sqrt(tomatoRating), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs sqrt(tomatoRating)", y="Gross", x="tomatoRating") 
+
+ggplot(data = df, aes(x = tomatoRating, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+        labs(title="Gross Vs poly(tomatoRating,2)", y="Gross", x="tomatoRating") 
+
+ggplot(data = df, aes(x = tomatoRating, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+
+        labs(title="Gross Vs poly(tomatoRating,3)", y="Gross", x="tomatoRating") 
+
+ggplot(data = df, aes(x = tomatoRating, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+
+        labs(title="Gross Vs poly(tomatoRating,4)", y="Gross", x="tomatoRating") 
+
+#For tomatoRating I found that poly(imdbVotes,2) fit my model and improved RSME the most.
+ggplot(data = df, aes(x = tomatoFresh, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()
+
+
+ggplot(data = df, aes(x = log10(tomatoFresh), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")
+
+ggplot(data = df, aes(x = sqrt(tomatoFresh), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")
+
+ggplot(data = df, aes(x = tomatoFresh, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))
+
+ggplot(data = df, aes(x = tomatoFresh, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))
+
+ggplot(data = df, aes(x = tomatoFresh, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))
+
+#The transformation sqrt(tomatoFresh) seems to fit the data the best.
+
+ggplot(data = df, aes(x = tomatoRotten, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()+ 
+        theme_bw()+ labs(title="Gross Vs tomatoRotten", y="Gross", x="tomatoRotten") 
+
+
+ggplot(data = df, aes(x = log10(tomatoRotten), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs log10(tomatoRotten)", y="Gross", x="tomatoRotten") 
+
+ggplot(data = df, aes(x = sqrt(tomatoRotten), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs sqrt(tomatoRotten)", y="Gross", x="tomatoRotten") 
+
+ggplot(data = df, aes(x = tomatoRotten, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))+ 
+        labs(title="Gross Vs poly(tomatoRotten,2)", y="Gross", x="tomatoRotten") 
+
+ggplot(data = df, aes(x = tomatoRotten, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+ 
+        labs(title="Gross Vs poly(tomatoRotten,3)", y="Gross", x="tomatoRotten") 
+
+ggplot(data = df, aes(x = tomatoRotten, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+ 
+        labs(title="Gross Vs poly(tomatoRotten,4)", y="Gross", x="tomatoRotten") 
+
+# looking at these graphs it seems that tomatoRotten that poly(tomattoRotten,4) fits the data the best
+
+ggplot(data = df, aes(x = tomatoUserMeter, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()+ labs(title="Gross Vs tomatoUserMeter", y="Gross", x="tomatoUserMeter") 
+
+
+ggplot(data = df, aes(x = log10(tomatoUserMeter), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs log10(tomatoUserMeter)", y="Gross", x="tomatoUserMeter") 
+
+ggplot(data = df, aes(x = sqrt(tomatoUserMeter), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs sqrt(tomatoUserMeter)", y="Gross", x="tomatoUserMeter") 
+
+ggplot(data = df, aes(x = tomatoUserMeter, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))+ labs(title="Gross Vs poly(tomatoUserMeter,2)", y="Gross", x="tomatoUserMeter") 
+
+ggplot(data = df, aes(x = tomatoUserMeter, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+ labs(title="Gross Vs poly(tomatoUserMeter,3)", y="Gross", x="tomatoUserMeter") 
+
+ggplot(data = df, aes(x = tomatoUserMeter, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+ labs(title="Gross Vs poly(tomatoUserMeter,4)", y="Gross", x="tomatoUserMeter") 
+
+# For tomatoUserMeter it is clear that the transformation poly(tomatoUserMeter,4) fits the data the best.
+ggplot(data = df, aes(x = tomatoUserReviews, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()+ labs(title="Gross Vs tomatoUserReviews", y="Gross", x="tomatoUserReviews") 
+
+
+ggplot(data = df, aes(x = log10(tomatoUserReviews), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs log10(tomatoUserReviews)", y="Gross", x="tomatoUserReviews") 
+
+ggplot(data = df, aes(x = sqrt(tomatoUserReviews), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs sqrt(tomatoUserReviews)", y="Gross", x="tomatoUserReviews") 
+
+ggplot(data = df, aes(x = tomatoUserReviews, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))+ labs(title="Gross Vs poly(tomatoUserReviews,2)", y="Gross", x="tomatoUserReviews") 
+
+ggplot(data = df, aes(x = tomatoUserReviews, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+ labs(title="Gross Vs poly(tomatoUserReviews,3)", y="Gross", x="tomatoUserReviews") 
+
+ggplot(data = df, aes(x = tomatoUserReviews, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+ labs(title="Gross Vs poly(tomatoUserReviews,4)", y="Gross", x="tomatoUserReviews")
+# For tomatoUserReviews it is clear that the transformation sqrt(tomatoUserReviews) fits the data the best.
+
+ggplot(data = df, aes(x = Budget, y = Gross)) +
+        geom_point() + 
+        geom_smooth(method = "lm") + 
+        theme_bw()+ labs(title="Gross Vs Budget", y="Gross", x="Budget") 
+
+
+ggplot(data = df, aes(x = log10(Budget), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs log10(Budget)", y="Gross", x="Budget") 
+
+ggplot(data = df, aes(x = sqrt(Budget), y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm")+ labs(title="Gross Vs sqrt(Budget)", y="Gross", x="Budget") 
+
+ggplot(data = df, aes(x = Budget, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 2))+ labs(title="Gross Vs poly(Budget,2)", y="Gross", x="Budget") 
+
+ggplot(data = df, aes(x = Budget, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 3))+ labs(title="Gross Vs poly(Budget,3)", y="Gross", x="Budget") 
+
+ggplot(data = df, aes(x = Budget, y = df$Gross)) + 
+        geom_point() + 
+        theme_bw() + 
+        stat_smooth(method = "lm", formula = y ~ poly(x, 4))+ labs(title="Gross Vs poly(Budget,4)", y="Gross", x="Budget")
+# For Budget I ran some poly tests with the regression and it was clear that poly(Budget,2) fits the data the best.
+budge = (df$Budget>3000000)
+df$budge = budge
+
+new.c.vars = cbind(budge)
+df= cbind(df, new.c.vars)
+
+run = (df$Runtime<100)
+df$run = run
+new.c.vars = cbind(run)
+df= cbind(df, new.c.vars)
+
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df)), replace=F,size=floor(training_size[i]*nrow(df)))
+                train = df[trainNumbers,]
+                test = df[-trainNumbers,]
+                
+                M1 <- lm(Gross~Year+log10(Runtime)+imdbRating + I(imdbRating ^2) + poly(imdbVotes,2) + poly(tomatoRating,2)+ sqrt(tomatoFresh) + sqrt(tomatoRotten) + poly(tomatoUserMeter,4) +
+                                       poly(tomatoUserRating,2) +sqrt(tomatoUserReviews)+ poly(Budget,2)+ budge + run , train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg = train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+```
+
+**Q**: Explain which transformations you used and why you chose them.
+
+**A**: For Runtime I believe that the transformation log10 on Runtime fits the data the best, based on the scatter plot with the fitted line graph.From the graphs for imdbRating I believe that the transformation imdbRating^2 fits the data the best. For tomatoRating I found that poly(imdbVotes,2) fit my model and improved RSME the most. Some of these were close for imdbVotes so i decided to try some of them in my model and found that poly(imdbVotes,2) improved my model the most. The transformation sqrt(tomatoFresh) seems to fit the data the best.# looking at these graphs it seems that tomatoRotten that poly(tomattoRotten,4) fits the data the best. For Budget I ran some poly tests with the regression and it was clear that poly(Budget,2) fits the data the best.
+
+
+It should also be noted that I am using 50iterations to get a less noisey graph. 
+
+## 3. Non-numeric variables
+
+Write code that converts genre, actors, directors, and other categorical variables to columns that can be used for regression (e.g. binary columns as you did in Project 1). Also process variables such as awards into more useful columns (again, like you did in Project 1). Now use these converted columns only to build your next model.
+
+```{r, message=FALSE, warning=FALSE}
+# TODO: Build & evaluate model 3 (converted non-numeric variables only)
+require(tm)
+myReader = readTabular(mapping = list(ImbdID= "imdbID", Content = "Genre"))
+mycorpus = Corpus(VectorSource(df$Genre))
+
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower), removePunctuation, removeNumbers, stripWhitespace), stemDocument)
+workingdtm = DocumentTermMatrix(dtmm)
+workingdtm_df1 = data.frame(as.matrix(workingdtm))
+
+amountOfTimesOccured = colSums(as.matrix(workingdtm))
+sort = order(amountOfTimesOccured,decreasing=TRUE)
+sortedDataframe = data.frame(term=names(amountOfTimesOccured),occurrences=amountOfTimesOccured)
+
+sortedDataframe$occurrences = (sortedDataframe$occurrences / length(df$imdbID))
+sortedDataframe$occurrences = (sortedDataframe$occurrences * 100)
+
+
+sortedDataframe = sortedDataframe[order(sortedDataframe$occurrences),]
+#top 10
+sortedDataframe = tail(sortedDataframe,10)
+print (sortedDataframe)
+
+dfTop10Genre = workingdtm_df1[,c("fantasy", 
+                        "mystery",
+                        "horror",
+                        "thriller",
+                        "crime",
+                        "romance",
+                        "adventure",
+                        "action",
+                        "comedy",
+                        "drama")]
+
+director = gsub(" ^[a-z]+$","", df$Director)
+director = str_replace_all(director, fixed(" "), "")
+director = gsub(",", " ", director)
+mycorpus = Corpus(VectorSource(director))
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower), removeNumbers), stemDocument)
+workingdtm = DocumentTermMatrix(dtmm)
+workingdtm_df2 = data.frame(as.matrix(workingdtm))
+
+amountOfTimesOccured = colSums(as.matrix(workingdtm))
+sort = order(amountOfTimesOccured,decreasing=TRUE)
+sortedDataframe = data.frame(term=names(amountOfTimesOccured),occurrences=amountOfTimesOccured)
+
+sortedDataframe$occurrences = (sortedDataframe$occurrences / length(df$imdbID))
+sortedDataframe$occurrences = (sortedDataframe$occurrences * 100)
+sortedDataframe = sortedDataframe[order(sortedDataframe$occurrences),]
+#top 10
+sortedDataframe = tail(sortedDataframe,10)
+print (sortedDataframe)
+top10Directorsdf = workingdtm_df2[,c("woodyallen", 
+                                   "stevensoderbergh",
+                                   "ridleyscott",
+                                   "stevenspielberg",
+                                   "shawnlevy",
+                                   "clinteastwood",
+                                   "ronhoward",
+                                   "robertrodriguez",
+                                   "peterjackson",
+                                   "peterfarrelly")]
+names(top10Directorsdf)[names(top10Directorsdf)=="woodyallen"] = "woodyallen1"
+
+actors = gsub(" ^[a-z]+$","", df$Actors)
+actors = str_replace_all(actors, fixed(" "), "")
+actors = gsub(",", " ", actors)
+
+mycorpus = Corpus(VectorSource(actors))
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower), removeNumbers), stemDocument)
+workingdtm = DocumentTermMatrix(dtmm)
+workingdtm_df3 = data.frame(as.matrix(workingdtm))
+
+amountOfTimesOccured = colSums(as.matrix(workingdtm))
+sort = order(amountOfTimesOccured,decreasing=TRUE)
+sortedDataframe = data.frame(term=names(amountOfTimesOccured),occurrences=amountOfTimesOccured)
+sortedDataframe$occurrences = (sortedDataframe$occurrences / length(df$imdbID))
+sortedDataframe$occurrences = (sortedDataframe$occurrences * 100)
+sortedDataframe = sortedDataframe[order(sortedDataframe$occurrences),]
+#top 10
+sortedDataframe = tail(sortedDataframe,10)
+print (sortedDataframe)
+
+top10Actorsdf = workingdtm_df3[,c("jackblack", 
+                                     "mattdamon",
+                                     "robertdowneyjr.",
+                                     "johnnydepp",
+                                     "markwahlberg",
+                                     "adamsandler",
+                                     "benstiller",
+                                     "samuell.jackson",
+                                     "owenwilson",
+                                  "robertdeniro")]
+
+wins = c()
+nominations = c()
+for(i in seq_along(df$Awards)){
+        winsHolder = 0
+        nominationsHolder = 0
+        pattern1 ="((\\d*?) (wins|win))"
+        pattern2 ="((\\d*?) (nominations|nomination))"
+        pattern3 ="Nominated for ((\\d*?) (Primetime|Golden Globes|Golden Globe|Oscars|Oscar|BAFTA))"
+        pattern4 = "Won ((\\d*?) (Primetime|Golden Globes|Golden Globe|Oscars|Oscar|BAFTA))"
+        if((!is.na(as.numeric(str_match(df$Awards[i],pattern4)[1,3])))){
+                winsHolder = winsHolder + as.numeric(str_match(df$Awards[i],pattern4)[1,3])
+        }
+        if((!is.na(as.numeric(str_match(df$Awards[i],pattern1)[1,3])))){
+                winsHolder = winsHolder + as.numeric(str_match(df$Awards[i],pattern1)[1,3])
+        }
+        if ((!is.na(as.numeric(str_match(df$Awards[i],pattern3)[1,3])))){
+                nominationsHolder = nominationsHolder + as.numeric(str_match(df$Awards[i],pattern3)[1,3])
+        }
+        if ((!is.na(as.numeric(str_match(df$Awards[i],pattern2)[1,3])))){
+                nominationsHolder = nominationsHolder + as.numeric(str_match(df$Awards[i],pattern2)[1,3])
+        }
+        if (is.na(as.numeric(str_match(df$Awards[i],pattern1)[1,3])) & is.na(as.numeric(str_match(df$Awards[i],pattern4)[1,3])) ){
+                winsHolder = 0
+        }
+        if (is.na(as.numeric(str_match(df$Awards[i],pattern3)[1,3])) & is.na(as.numeric(str_match(df$Awards[i],pattern2)[1,3]))){
+                nominationsHolder = 0
+        }
+        wins = append(wins,winsHolder)
+        nominations = append(nominations,nominationsHolder)
+        winsHolder = 0
+        nominationsHolder = 0
+}
+
+wins = data.frame(wins)
+#colnames(wins)[2] = "imdbID"
+nominations = data.frame(nominations)
+#colnames(nominations)[2] = "imdbID"
+
+require(tm)
+myReader = readTabular(mapping = list(ImbdID= "imdbID", Content = "Country"))
+mycorpus = Corpus(VectorSource(df$Country))
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower), removePunctuation, removeNumbers, stripWhitespace), stemDocument)
+workingdtm = DocumentTermMatrix(dtmm)
+workingdtm_df4 = data.frame(as.matrix(workingdtm))
+amountOfTimesOccured = colSums(as.matrix(workingdtm))
+sort = order(amountOfTimesOccured,decreasing=TRUE)
+sortedDataframe = data.frame(term=names(amountOfTimesOccured),occurrences=amountOfTimesOccured)
+sortedDataframe$occurrences = (sortedDataframe$occurrences / length(df$imdbID))
+sortedDataframe$occurrences = (sortedDataframe$occurrences * 100)
+sortedDataframe = sortedDataframe[order(sortedDataframe$occurrences),]
+#top 10
+sortedDataframe = tail(sortedDataframe,10)
+print (sortedDataframe)
+
+top10Countriesdf = workingdtm_df4[,c("china", 
+                                  "ireland",
+                                  "italy",
+                                  "japan",
+                                  "spain",
+                                  "australia",
+                                  "canada",
+                                  "france",
+                                  "germany",
+                                  "usa")]
+
+require(tm)
+myReader = readTabular(mapping = list(ImbdID= "imdbID", Content = "Language"))
+mycorpus = Corpus(VectorSource(df$Language))
+
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower), removePunctuation, removeNumbers, stripWhitespace), stemDocument)
+workingdtm = DocumentTermMatrix(dtmm)
+workingdtm_df5 = data.frame(as.matrix(workingdtm))
+amountOfTimesOccured = colSums(as.matrix(workingdtm))
+sort = order(amountOfTimesOccured,decreasing=TRUE)
+sortedDataframe = data.frame(term=names(amountOfTimesOccured),occurrences=amountOfTimesOccured)
+sortedDataframe$occurrences = (sortedDataframe$occurrences / length(df$imdbID))
+sortedDataframe$occurrences = (sortedDataframe$occurrences * 100)
+sortedDataframe = sortedDataframe[order(sortedDataframe$occurrences),]
+#top 10
+sortedDataframe = tail(sortedDataframe,10)
+print (sortedDataframe)
+
+top10Languagesdf = workingdtm_df5[,c("latin", 
+                                     "arabic",
+                                     "mandarin",
+                                     "japanese",
+                                     "italian",
+                                     "russian",
+                                     "german",
+                                     "french",
+                                     "spanish",
+                                     "english")]
+
+writer = gsub(" ^[a-z]+$","", df$Writer)
+writer = str_replace_all(writer, fixed(" "), "")
+writer = gsub(",", " ", writer)
+writer = gsub("\\s*\\([^\\)]+\\)","",as.character(writer))
+mycorpus = Corpus(VectorSource(writer))
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower), removeNumbers), stemDocument)
+workingdtm = DocumentTermMatrix(dtmm)
+workingdtm_df6 = data.frame(as.matrix(workingdtm))
+amountOfTimesOccured = colSums(as.matrix(workingdtm))
+sort = order(amountOfTimesOccured,decreasing=TRUE)
+sortedDataframe = data.frame(term=names(amountOfTimesOccured),occurrences=amountOfTimesOccured)
+sortedDataframe$occurrences = (sortedDataframe$occurrences / length(df$imdbID))
+sortedDataframe$occurrences = (sortedDataframe$occurrences * 100)
+sortedDataframe = sortedDataframe[order(sortedDataframe$occurrences),]
+#top 10
+sortedDataframe = tail(sortedDataframe,11)
+print (sortedDataframe)
+
+top10Writersdf = workingdtm_df6[,c("j.davidstem", 
+                                     "jackkirby",
+                                     "marlonwayans",
+                                     "stanlee",
+                                     "stuartbeattie",
+                                     "woodyallen",
+                                     "johnlogan",
+                                     "tedelliott",
+                                     "terryrossio",
+                                     "lucbesson")]
+
+require(tm)
+production = gsub(" ^[a-z]+$","", df$Production)
+production = str_replace_all(production, fixed(" "), "")
+production = str_replace_all(production, fixed("/"), ",")
+production = gsub(",", " ", production)
+production = str_replace_all(production, fixed("."), "")
+mycorpus = Corpus(VectorSource(production))
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower), removeNumbers), stemDocument)
+workingdtm = DocumentTermMatrix(dtmm)
+workingdtm_df7 = data.frame(as.matrix(workingdtm))
+amountOfTimesOccured = colSums(as.matrix(workingdtm))
+sort = order(amountOfTimesOccured,decreasing=TRUE)
+sortedDataframe = data.frame(term=names(amountOfTimesOccured),occurrences=amountOfTimesOccured)
+sortedDataframe$occurrences = (sortedDataframe$occurrences / length(df$imdbID))
+sortedDataframe$occurrences = (sortedDataframe$occurrences * 100)
+sortedDataframe = sortedDataframe[order(sortedDataframe$occurrences),]
+#top 10
+sortedDataframe = tail(sortedDataframe,10)
+print (sortedDataframe)
+
+top10Productiondf = workingdtm_df7[,c("columbiapictures", 
+                                   "waltdisneypictures",
+                                   "lionsgatefilms",
+                                   "sonypicturesclassics",
+                                   "newlinecinema",
+                                   "paramountpictures",
+                                   "sonypictures",
+                                   "thcenturyfox",
+                                   "universalpictures",
+                                   "warnerbrospictures")]
+
+releaseMonth = (format(df$Released, "%b"))
+l = data.frame(releaseMonth)
+
+mycorpus = Corpus(VectorSource(l$releaseMonth))
+
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower)), stemDocument)
+workingdtm = DocumentTermMatrix(mycorpus)
+releaseMonthdf = data.frame(as.matrix(workingdtm))
+
+rating = gsub(" ^[a-z]+$","", df$Rated)
+rating = str_replace_all(rating, fixed("-"), "")
+rating = gsub(" ", "", rating)
+r = data.frame(rating)
+mycorpus = Corpus(VectorSource(r$rating))
+
+dtmm = tm_map(mycorpus, FUN = tm_reduce, tmFuns = list(content_transformer(tolower)), stemDocument)
+workingdtm = DocumentTermMatrix(mycorpus,control=list(wordLengths=c(1,Inf)))
+ratingdf = data.frame(as.matrix(workingdtm))
+
+Grossdf = data.frame(df$Gross)
+names(Grossdf)[names(Grossdf)=="df.Gross"] = "Gross"
+dfBinary = do.call("cbind", list(Grossdf, dfTop10Genre, top10Directorsdf, top10Actorsdf, 
+                                 wins, nominations, top10Countriesdf,  top10Languagesdf,
+                                 top10Writersdf, top10Productiondf, releaseMonthdf, ratingdf))
+options(warn=-1)
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                        trainNumbers = sample(seq_len(nrow(dfBinary)), replace=F,size=floor(training_size[i]*nrow(dfBinary)))
+                        train = dfBinary[trainNumbers,]
+                        test = dfBinary[-trainNumbers,]
+
+                        M1 = lm(Gross~., train);
+                       
+                        pred_train = predict(M1, train)
+                        pred_test = predict(M1,test)
+                        train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                        
+                        test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                        
+                        if(l == 50){
+                                train_avg = train_rmse_avg/50
+                                training_rmse[i] = train_avg 
+                                train_rmse_avg = 0
+                                test_avg = test_rmse_avg/50
+                                testing_rmse[i] = test_avg
+                                test_rmse_avg = 0
+                        }
+                }
+        }
+             
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+```
+
+**Q**: Explain which categorical variables you used, and how you encoded them into features.
+
+**A**: I used the categorical variables: Genre, Director, Actors, Awards, Country, Language, Writer, Production, Released and Rated. 
+
+For Genre I used Corpus to create a binary column for each unique type of Genre present, and if there is more than one Genre present and is seperated by a comma, the binary column will record that aswell, it is encoded for 1 if present 0 if not present for each movie. 
+
+For Director I first  usea regex statement to make sure there are no numbers or special characters. I then got rid of all the spaces and then replaced all the commas with a space indicatiing another Director. I then used Corpus to create a binary column for each unique type of Director present, and if there is more than one Director present and is seperated by a comma, the binary column will record that aswell, it is encoded for 1 if present 0 if not present for each movie.
+
+For Actors I first use a regex statement to make sure there are no numbers or special characters. I then got rid of all the spaces and then replaced all the commas with a space indicatiing another Actor. I then used Corpus to create a binary column for each unique type of Actor present, and if there is more than one Actor present and is seperated by a comma, the binary column will record that aswell, it is encoded for 1 if present 0 if not present for each movie.
+
+For Awards, I used 4 regex groups:  "((\\d*?) (wins|win))",  "((\\d*?) (nominations|nomination))", Nominated for ((\\d*?) (Primetime|Golden Globes|Golden Globe|Oscars|Oscar|BAFTA))", "Won ((\\d*?) (Primetime|Golden Globes|Golden Globe|Oscars|Oscar|BAFTA))", I then searched each row in the Awards column and if there was a pattern that matched the digit and word groups I set up I would extract the number for each. After getting the number I put them into either won or nominations vectors, then put the two vectors created as columns in the dataframe labeled wins and nominations.
+
+For Country, I used Corpus to create a binary column for each unique type of Country present, and if there is more than one Country present and is seperated by a comma, the binary column will record that aswell, it is encoded for 1 if present 0 if not present for each movie. 
+
+For Language, I used Corpus to create a binary column for each unique type of Language present, and if there is more than one Language present and is seperated by a comma, the binary column will record that aswell, it is encoded for 1 if present 0 if not present for each movie. 
+
+For Writer, I first use a regex statement to make sure there are no numbers or special characters. I then got rid of all the spaces and then replaced all the commas with a space indicating another Actor. I then used another regex statment to delete all of the statments with parenthesis in them.  I then used Corpus to create a binary column for each unique type of Writer present, and if there is more than one Writer present and is seperated by a comma, the binary column will record that aswell, it is encoded for 1 if present 0 if not present for each movie.
+
+For Production, I first a regex statement to make sure there are no numbers or special characters. I then got rid of all the spaces and then replaced all the slashes with a comma. I then used another regex statment to delete all of the statments with parenthesis in them. I next replaced all the commas with a space indicating another Production company name. I next got rid of all the periods so that my Corpus would run corretly.  I then used Corpus to create a binary column for each unique type of Production present, and if there is more than one Production present and is seperated by a space, the binary column will record that aswell, it is encoded for 1 if present 0 if not present for each movie.
+
+For Released, I converted the format to be a string of just the months and created a seperate dataframe with thoes the month for each movie. I used Corpus to create a binary column for each Month present, it is encoded for 1 if present 0 if not present for each movie. 
+
+For Rating, I first use a regex statement to make sure there are no numbers or special characters. I then got rid of all the dashes and removed all the spaces. I used Corpus to create a binary column for each Rating present, it is encoded for 1 if present 0 if not present for each movie.
+
+For Genre, Director, Actors, Country, Language, Writer and Production I only used the top 10 of the columns becuase they produced the most data.
+It should also be noted that I am using 50iterations to get a less noisey graph. 
+## 4. Numeric and categorical variables
+
+Try to improve the prediction quality as much as possible by using both numeric and non-numeric variables from **Tasks 2 & 3**.
+
+```{r, message=FALSE, warning=FALSE}
+# TODO: Build & evaluate model 4 (numeric & converted non-numeric variables)
+
+dfBinary2 = do.call("cbind", list(dfTop10Genre, top10Directorsdf, top10Actorsdf, 
+                                 wins, nominations, top10Countriesdf,  top10Languagesdf,
+                                 top10Writersdf, top10Productiondf, releaseMonthdf, ratingdf))
+dfBinary3= cbind(dfBinary2, df$imdbID)
+names(dfBinary3)[names(dfBinary3)=="df$imdbID"] = "imdbID"
+
+df8 = merge(dfBinary3,df,by="imdbID")
+
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                        trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                        train = df8[trainNumbers,]
+                        test = df8[-trainNumbers,]
+
+                        M1 = lm(Gross~Year+log10(Runtime)+imdbRating + I(imdbRating ^2) + poly(imdbVotes,2) + poly(tomatoRating,2)+ sqrt(tomatoFresh) + sqrt(tomatoRotten) + poly(tomatoUserMeter,4) +
+                                       poly(tomatoUserRating,2) +sqrt(tomatoUserReviews)+ poly(Budget,2) + budge + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + notrated + pg + pg13 + r + unrated +
+                               woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                               samuell.jackson+owenwilson+robertdeniro+ wins+ nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+j.davidstem+ jackkirby+
+                               marlonwayans+stanlee+stuartbeattie+woodyallen+johnlogan+tedelliott+terryrossio+
+                               lucbesson+ columbiapictures+ waltdisneypictures+lionsgatefilms+sonypicturesclassics+newlinecinema+ 
+                               paramountpictures+ sonypictures+ thcenturyfox + universalpictures + warnerbrospictures +fantasy + mystery + 
+                               horror+ thriller+ crime +romance+adventure+action+comedy+drama, train);
+                        pred_train = predict(M1, train)
+                        pred_test = predict(M1,test)
+                        train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                        
+                        test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                        
+                        if(l == 50){
+                                train_avg = train_rmse_avg/50
+                                training_rmse[i] = train_avg 
+                                train_rmse_avg = 0
+                                test_avg = test_rmse_avg/50
+                                testing_rmse[i] = test_avg
+                                test_rmse_avg = 0
+                        }
+                }
+        }
+             
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+```
+
+## 5. Additional features
+
+Now try creating additional features such as interactions (e.g. `is_genre_comedy` x `is_budget_greater_than_3M`) or deeper analysis of complex variables (e.g. text analysis of full-text columns like `Plot`).
+
+```{r,message=FALSE, warning=FALSE}
+# TODO: Build & evaluate model 5 (numeric, non-numeric and additional features)
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime)+ + imdbRating *  tomatoRating + poly(imdbVotes,2) + sqrt(tomatoRotten) + tomatoUserMeter *tomatoUserRating  *sqrt(tomatoUserReviews)
+                        + Budget * tomatoFresh  + budge + drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + notrated + pg + pg13 + r + unrated +
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro+ wins+ nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime)+ + imdbRating *  tomatoRating + poly(imdbVotes,2) + sqrt(tomatoRotten) + tomatoUserMeter * tomatoUserRating *sqrt(tomatoUserReviews)
+                                        + Budget * tomatoFresh  + drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + pg + pg13 + r + 
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro+ wins+ nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+
+#Test 3
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+Runtime * tomatoRating  +imdbVotes + wins + nominations +tomatoRating + Budget +sqrt(tomatoRotten)  +tomatoUserMeter + imdbRating +
+                                + poly(tomatoUserRating,2) +sqrt(tomatoUserReviews) + budge + drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + notrated + pg + pg13 + r + unrated +
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro+ wins+ nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+j.davidstem+ jackkirby+
+                                marlonwayans+stanlee+stuartbeattie+woodyallen+johnlogan+tedelliott+terryrossio+
+                                lucbesson+ columbiapictures+ waltdisneypictures+lionsgatefilms+sonypicturesclassics+newlinecinema+ 
+                                paramountpictures+ sonypictures+ thcenturyfox + universalpictures + warnerbrospictures +fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime)+imdbRating + imdbRating * tomatoRating +  poly(imdbVotes,2) + sqrt(tomatoFresh) + sqrt(tomatoRotten) + poly(tomatoUserMeter,4) +
+                                poly(tomatoUserRating,2) +sqrt(tomatoUserReviews)+ poly(Budget,2) + budge * drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + notrated + pg + pg13 + r + unrated +
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro+ wins+ nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+j.davidstem+ jackkirby+
+                                marlonwayans+stanlee+stuartbeattie+woodyallen+johnlogan+tedelliott+terryrossio+
+                                lucbesson+ columbiapictures+ waltdisneypictures+lionsgatefilms+sonypicturesclassics+newlinecinema+ 
+                                paramountpictures+ sonypictures+ thcenturyfox + universalpictures + warnerbrospictures +fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime)+imdbRating + I(imdbRating ^2) + poly(imdbVotes,2) + poly(tomatoRating,2)+ sqrt(tomatoFresh) * Budget * wins * nominations + sqrt(tomatoRotten) + poly(tomatoUserMeter,4) +
+                                poly(tomatoUserRating,2) +sqrt(tomatoUserReviews) + budge * drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + notrated + pg + pg13 + r + unrated +
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro +china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+j.davidstem+ jackkirby+
+                                marlonwayans+stanlee+stuartbeattie+woodyallen+johnlogan+tedelliott+terryrossio+
+                                lucbesson+ columbiapictures+ waltdisneypictures+lionsgatefilms+sonypicturesclassics+newlinecinema+ 
+                                paramountpictures+ sonypictures+ thcenturyfox + universalpictures + warnerbrospictures +fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+
+
+
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime) +poly(imdbVotes,2) * wins * nominations + tomatoRating * Budget +sqrt(tomatoRotten)  +tomatoUserMeter *imdbRating +
+                                + poly(tomatoUserRating,2) +sqrt(tomatoUserReviews) + budge * drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + notrated + pg + pg13 + r + unrated +
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro+ wins+ nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+j.davidstem+ jackkirby+
+                                marlonwayans+stanlee+stuartbeattie+woodyallen+johnlogan+tedelliott+terryrossio+
+                                lucbesson+ columbiapictures+ waltdisneypictures+lionsgatefilms+sonypicturesclassics+newlinecinema+ 
+                                paramountpictures+ sonypictures+ thcenturyfox + universalpictures + warnerbrospictures +fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+
+
+
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime)+ + imdbRating *  tomatoRating + poly(imdbVotes,2) + sqrt(tomatoRotten) + tomatoUserMeter * tomatoUserRating *sqrt(tomatoUserReviews)
+                        + Budget * tomatoFresh  + drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + pg + pg13 + r + 
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro+ wins * nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime)+ imdbRating *  tomatoRating + poly(imdbVotes,2) + sqrt(tomatoRotten) + tomatoUserMeter * tomatoUserRating *sqrt(tomatoUserReviews)
+                        + Budget * tomatoFresh  + drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + pg + pg13 + r + 
+                                woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+                                samuell.jackson+owenwilson+robertdeniro+ wins * nominations+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+fantasy + mystery + 
+                                horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+#Final
+training_size = (seq(.05, 0.95, .05))
+testing_size = (seq(.95, 0.05, -.05))
+
+sizes = (seq(1,19,1))
+training_rmse = vector("numeric", 19L)
+
+testing_rmse = vector("numeric", 19L)
+train_rmse_avg = 0
+test_rmse_avg = 0
+set.seed(5)
+for (i in 1:19){
+        for (l in 1:50){
+                trainNumbers = sample(seq_len(nrow(df8)), replace=F,size=floor(training_size[i]*nrow(df8)))
+                train = df8[trainNumbers,]
+                test = df8[-trainNumbers,]
+                
+                M1 = lm(Gross~Year+log10(Runtime)+ + imdbRating *  tomatoRating * nominations + poly(imdbVotes,2) * wins + sqrt(tomatoRotten) + tomatoUserMeter * tomatoUserRating *sqrt(tomatoUserReviews) 
++ Budget * tomatoFresh  + budge + drama + run + apr + aug + dec + feb+ jan+ jul+ jun +mar+ may +nov +oct +sep + g + n.a + nc17 + notrated + pg + pg13 + r + 
+woodyallen1 +stevensoderbergh+ridleyscott+stevenspielberg+shawnlevy+clinteastwood+ronhoward+robertrodriguez+peterjackson+peterfarrelly+jackblack +mattdamon+robertdowneyjr.+johnnydepp+markwahlberg+adamsandler+benstiller+
+samuell.jackson+owenwilson+robertdeniro+china +ireland+italy+japan+spain+australia +canada +france +germany+usa+latin+ arabic+mandarin+japanese+italian+russian+german+french+spanish+english+fantasy + mystery + 
+horror+ thriller+ crime +romance+adventure+action+comedy, train);
+                
+                pred_train = predict(M1, train)
+                pred_test = predict(M1,test)
+                train_rmse_avg =  train_rmse_avg + rmse(pred_train,train$Gross)
+                
+                test_rmse_avg = test_rmse_avg + rmse(pred_test,test$Gross) 
+                
+                if(l == 50){
+                        train_avg = train_rmse_avg/50
+                        training_rmse[i] = train_avg 
+                        train_rmse_avg = 0
+                        test_avg = test_rmse_avg/50
+                        testing_rmse[i] = test_avg
+                        test_rmse_avg = 0
+                }
+        }
+}
+
+
+dfAccuracyProblem1 = data.frame(training_rmse, testing_rmse)
+training_size_graph_seq = (seq(.05, 0.95, .05))
+train_size_graph = data.frame(training_size_graph_seq)
+dfAccuracyProblem1 = dfAccuracyProblem1[seq(dim(dfAccuracyProblem1)[1],1),] 
+dfAccuracyProblem1 <- apply(dfAccuracyProblem1, 2, rev)
+dfAccuracyProblem1 = data.frame(dfAccuracyProblem1)
+ggplot(train_size_graph, aes(training_size_graph_seq)) + 
+        geom_line(aes(y = dfAccuracyProblem1$training_rmse, colour = "Training RMSE")) + 
+        geom_line(aes(y = dfAccuracyProblem1$testing_rmse, colour = "Testing RMSE"))+
+        scale_x_continuous(breaks = pretty(train_size_graph$training_size_graph_seq, n = 19))+ 
+        xlab("Training sizes 5% to 95%") +
+        ylab("RMSE") +
+        ggtitle("Learning Curve")
+print(paste("Lowest Training RMSE:", min(training_rmse), sep = " "))
+print(paste("Lowest Testing RMSE", min(testing_rmse), sep = " "))
+
+```
+
+**Q**: Explain what new features you designed and why you chose them.
+
+**A**: After multiple test and using my intuition on how I think that some of the features would be well suited to be combined as well as looking back on my P1 results, I discovered that:imdbRating *  tomatoRating * nominations, poly(imdbVotes,2) * wins, tomatoUserMeter * tomatoUserRating *sqrt(tomatoUserReviews), and Budget * tomatoFresh gave the lowest RMSE scores and improved my model. I also decided to remove variables that did not occur much and were not correleated to the data in usable ways, reducing noise.
